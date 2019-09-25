@@ -85,6 +85,7 @@ int main(int argc, char *argv[], char *envp[])
 	if (!strcmp(argv[1], "swrk")) {
 		if (argc < 3)
 			goto usage;
+
 		/*
 		 * This is to start criu service worker from libcriu calls.
 		 * The usage is "criu swrk <fd>" and is not for CLI/scripts.

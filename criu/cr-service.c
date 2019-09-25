@@ -246,6 +246,10 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 	int i;
 	bool dummy = false;
 
+	FILE *fp;
+	fp = fopen("/home/debian/cdbg.txt", "w+");
+	fprintf(fp, "setting up opts\n");
+
 	if (getsockopt(sk, SOL_SOCKET, SO_PEERCRED, &ids, &ids_len)) {
 		pr_perror("Can't get socket options");
 		goto err;
@@ -271,10 +275,24 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 		char *tmp_work = opts.work_dir;
 		char *tmp_imgs = opts.imgs_dir;
 
+		if (fp)
+			fprintf(fp, "config file is %s\n", req->config_file);
+
+		if (tmp_output)
+			fprintf(fp, "orig output is %s\n", opts.output);
+
+		if (tmp_work)
+			fprintf(fp, "orig tmpwork is %s\n", opts.work_dir);
+
+		if (tmp_imgs)
+			fprintf(fp, "orig imgdir is %s\n", opts.imgs_dir);
+
+
 		opts.output = NULL;
 		opts.work_dir = NULL;
 		opts.imgs_dir = NULL;
 
+		//	parse /etc/criu/runc.conf
 		rpc_cfg_file = req->config_file;
 		i = parse_options(0, NULL, &dummy, &dummy, PARSING_RPC_CONF);
 		if (i) {
@@ -301,6 +319,16 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 
 		if (opts.imgs_dir)
 			imgs_changed_by_rpc_conf = true;
+
+		if (opts.output)
+			fprintf(fp, "new output is %s\n", opts.output);
+
+		if (opts.work_dir)
+			fprintf(fp, "new workdir is %s\n", opts.work_dir);
+
+		if (opts.imgs_dir)
+			fprintf(fp, "new imgdir is %s\n", opts.imgs_dir);
+
 		/*
 		 * As the images directory is a required RPC setting, it is not
 		 * necessary to use the value from other configuration files.
@@ -346,6 +374,8 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 		goto err;
 	}
 
+	fprintf(fp, "imgs dir path is %s\n", images_dir);
+
 	/* chdir to work dir */
 	if (work_changed_by_rpc_conf)
 		/* Use the value from the RPC configuration file first. */
@@ -360,10 +390,19 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 		/* Use the images directory a work directory. */
 		strcpy(work_dir_path, images_dir_path);
 
+	char tmpdir[PATH_MAX];
+	readlink(work_dir_path, tmpdir, PATH_MAX);
+	fprintf(fp, "work dir path is %s\n", tmpdir);
+
 	if (chdir(work_dir_path)) {
 		pr_perror("Can't chdir to work_dir");
 		goto err;
 	}
+
+	if (req->log_file)
+		fprintf(fp, "log file is %s\n", req->log_file);
+	else
+		fprintf(fp, "log file undefined\n");
 
 	/* initiate log file in work dir */
 	if (req->log_file && !output_changed_by_rpc_conf) {
@@ -376,10 +415,13 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 			goto err;
 		}
 
+		//	sets the options struct field
 		SET_CHAR_OPTS(output, req->log_file);
 	} else if (!opts.output) {
 		SET_CHAR_OPTS(output, DEFAULT_LOG_FILENAME);
 	}
+
+	fprintf(fp, "output is %s\n", opts.output);
 
 	/* This is needed later to correctly set the log_level */
 	opts.log_level = req->log_level;
@@ -670,9 +712,15 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 	if (check_options())
 		goto err;
 
+	if (fp)
+		fclose(fp);
+
 	return 0;
 
 err:
+	if (fp)
+		fclose(fp);
+
 	set_cr_errno(EBADRQC);
 	return -1;
 }
