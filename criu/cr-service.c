@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -247,8 +248,17 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 	bool dummy = false;
 
 	FILE *fp;
-	fp = fopen("/home/debian/cdbg.txt", "w+");
-	fprintf(fp, "setting up opts\n");
+	fp = fopen("/home/debian/cdbg.txt", "a+");
+
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+
+	unsigned long long millisecondsSinceEpoch =
+	    (unsigned long long)(tv.tv_sec) * 1000 +
+	    (unsigned long long)(tv.tv_usec) / 1000;
+
+	fprintf(fp, "\n\n\nsetting up opts at time %llu\n", millisecondsSinceEpoch);
 
 	if (getsockopt(sk, SOL_SOCKET, SO_PEERCRED, &ids, &ids_len)) {
 		pr_perror("Can't get socket options");
@@ -391,8 +401,8 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 		strcpy(work_dir_path, images_dir_path);
 
 	char tmpdir[PATH_MAX];
-	readlink(work_dir_path, tmpdir, PATH_MAX);
-	fprintf(fp, "work dir path is %s\n", tmpdir);
+	if (readlink(work_dir_path, tmpdir, PATH_MAX))
+		fprintf(fp, "work dir path is %s\n", tmpdir);
 
 	if (chdir(work_dir_path)) {
 		pr_perror("Can't chdir to work_dir");
@@ -415,8 +425,13 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 			goto err;
 		}
 
+		//	append timestamp to log file
+		fprintf(fp, "append same timestamp to log file\n");
+		char fname[256];
+		sprintf(fname, "%s-%llu", req->log_file, millisecondsSinceEpoch);
+
 		//	sets the options struct field
-		SET_CHAR_OPTS(output, req->log_file);
+		SET_CHAR_OPTS(output, fname);
 	} else if (!opts.output) {
 		SET_CHAR_OPTS(output, DEFAULT_LOG_FILENAME);
 	}
