@@ -248,7 +248,13 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 	bool dummy = false;
 
 	FILE *fp;
-	fp = fopen("/home/debian/cdbg.txt", "a+");
+
+	const char *s = getenv("CRIU_DBG_FILE");
+
+	if (s)
+		fp = fopen(s, "a+");
+	else
+		fp = fopen("/home/ubuntu/cdbg.txt", "a+");
 
 	struct timeval tv;
 
