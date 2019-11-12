@@ -5,6 +5,7 @@
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <sched.h>
+#include <arpa/inet.h>
 
 // MAO required on Centos 6 (linux-3.18.1 kernel)
 #include <linux/filter.h>
@@ -56,6 +57,53 @@
 #endif
 
 #define TUN_DEV_GEN_PATH	"/dev/net/tun"
+
+int tun_alloc(char *dev, int flags) {
+
+  struct ifreq ifr;
+  int fd, err;
+  char *clonedev = "/dev/net/tun";
+
+  /* Arguments taken by the function:
+   *
+   * char *dev: the name of an interface (or '\0'). MUST have enough
+   *   space to hold the interface name if '\0' is passed
+   * int flags: interface flags (eg, IFF_TUN etc.)
+   */
+
+   /* open the clone device */
+   if( (fd = open(clonedev, O_RDWR)) < 0 ) {
+     return fd;
+   }
+
+   /* preparation of the struct ifr, of type "struct ifreq" */
+   memset(&ifr, 0, sizeof(ifr));
+
+   ifr.ifr_flags = flags;   /* IFF_TUN or IFF_TAP, plus maybe IFF_NO_PI */
+
+   if (*dev) {
+     /* if a device name was specified, put it in the structure; otherwise,
+      * the kernel will try to allocate the "next" device of the
+      * specified type */
+     strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+   }
+
+   /* try to create the device */
+   if( (err = ioctl(fd, TUNSETIFF, (void *) &ifr)) < 0 ) {
+     close(fd);
+     return err;
+   }
+
+  /* if the operation was successful, write back the name of the
+   * interface to the variable "dev", so the caller can know
+   * it. Note that the caller MUST reserve space in *dev (see calling
+   * code below) */
+  strcpy(dev, ifr.ifr_name);
+
+  /* this is the special file descriptor that the caller will use to talk
+   * with the virtual interface */
+  return fd;
+}
 
 int check_tun_cr(int no_tun_err)
 {
@@ -389,7 +437,12 @@ static int tunfile_open(struct file_desc *d, int *new_fd)
 	tl = find_tun_link(ti->tfe->netdev, ns_id);
 	if (!tl) {
 		pr_err("No tun device for file %s\n", ti->tfe->netdev);
-		goto err;
+		pr_err("trying to create tl struct\n");
+		tl = xmalloc(sizeof(struct tun_link));
+		memset(tl, 0, sizeof(struct tun_link));
+		strcpy(tl->name, ti->tfe->netdev);
+		tl->rst.flags = (IFF_TUN | IFF_NO_PI);
+//		goto err;
 	}
 
 	memset(&ifr, 0, sizeof(ifr));
@@ -400,6 +453,27 @@ static int tunfile_open(struct file_desc *d, int *new_fd)
 		pr_perror("Can't attach tunfile to device");
 		goto err;
 	}
+
+	pr_info("interface name is %s\n", tl->name);
+
+//  this is done by running settun.sh as soon as container restores
+//	if (!strcmp(tl->name, "ogstun")) {
+//
+//		pr_info("trying to set ip address for ogstun interface\n");
+//
+//		ifr.ifr_addr.sa_family = AF_INET;
+//		struct sockaddr_in* addr = (struct sockaddr_in*) &ifr.ifr_addr;
+//		inet_pton(AF_INET, "192.168.215.1", &addr->sin_addr);
+//	    ioctl(fd, SIOCSIFADDR, &ifr);
+//
+//	    inet_pton(AF_INET, "255.255.255.0", &addr->sin_addr);
+//	    ioctl(fd, SIOCSIFNETMASK, &ifr);
+//
+//	    ioctl(fd, SIOCGIFFLAGS, &ifr);
+//	    ifr.ifr_flags |= (IFF_UP | IFF_RUNNING);
+//	    ioctl(fd, SIOCSIFFLAGS, &ifr);
+//
+//	}
 
 	if (ti->tfe->has_detached && ti->tfe->detached) {
 		pr_info("Detaching from %s queue\n", ti->tfe->netdev);
@@ -418,10 +492,12 @@ static int tunfile_open(struct file_desc *d, int *new_fd)
 		}
 	}
 ok:
+//	xfree(tl);
 	*new_fd = fd;
 	return 0;
 
 err:
+//	xfree(tl);
 	close(fd);
 	return -1;
 }
