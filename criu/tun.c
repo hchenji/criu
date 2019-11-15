@@ -85,7 +85,7 @@ int tun_alloc(char *dev, int flags) {
      /* if a device name was specified, put it in the structure; otherwise,
       * the kernel will try to allocate the "next" device of the
       * specified type */
-     strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+     strlcpy(ifr.ifr_name, dev, IFNAMSIZ);
    }
 
    /* try to create the device */
