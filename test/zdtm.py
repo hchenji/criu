@@ -912,6 +912,13 @@ class criu_rpc:
             if arg == '--prev-images-dir':
                 criu.opts.parent_img = args.pop(0)
                 continue
+            if arg == '--pre-dump-mode':
+                key = args.pop(0)
+                mode = crpc.rpc.VM_READ
+                if key == "splice":
+                    mode = crpc.rpc.SPLICE
+                criu.opts.pre_dump_mode = mode
+                continue
             if arg == '--track-mem':
                 criu.opts.track_mem = True
                 continue
@@ -929,7 +936,7 @@ class criu_rpc:
                 inhfd.key = key
                 continue
 
-            raise test_fail_exc('RPC for %s required' % arg)
+            raise test_fail_exc('RPC for %s(%s) required' % (arg, args.pop(0)))
 
     @staticmethod
     def run(action,
@@ -1011,6 +1018,7 @@ class criu:
         self.__mdedup = bool(opts['noauto_dedup'])
         self.__user = bool(opts['user'])
         self.__leave_stopped = bool(opts['stop'])
+        self.__remote = bool(opts['remote'])
         self.__criu = (opts['rpc'] and criu_rpc or criu_cli)
         self.__show_stats = bool(opts['show_stats'])
         self.__lazy_pages_p = None
@@ -1019,6 +1027,7 @@ class criu:
         self.__tls = self.__tls_options() if opts['tls'] else []
         self.__criu_bin = opts['criu_bin']
         self.__crit_bin = opts['crit_bin']
+        self.__pre_dump_mode = opts['pre_dump_mode']
 
     def fini(self):
         if self.__lazy_migrate:
@@ -1235,6 +1244,32 @@ class criu:
 
         a_opts += self.__test.getdopts()
 
+        if self.__remote:
+            logdir = os.getcwd() + "/" + self.__dump_path + "/" + str(
+                self.__iter)
+            print("Adding image cache")
+
+            cache_opts = [
+                self.__criu_bin, "image-cache", "--port", "12345", "-v4", "-o",
+                logdir + "/image-cache.log", "-D", logdir
+            ]
+
+            subprocess.Popen(cache_opts).pid
+            time.sleep(1)
+
+            print("Adding image proxy")
+
+            proxy_opts = [
+                self.__criu_bin, "image-proxy", "--port", "12345", "--address",
+                "localhost", "-v4", "-o", logdir + "/image-proxy.log", "-D",
+                logdir
+            ]
+
+            subprocess.Popen(proxy_opts).pid
+            time.sleep(1)
+
+            a_opts += ["--remote"]
+
         if self.__dedup:
             a_opts += ["--auto-dedup"]
 
@@ -1249,6 +1284,8 @@ class criu:
             a_opts += ['--leave-stopped']
         if self.__empty_ns:
             a_opts += ['--empty-ns', 'net']
+        if self.__pre_dump_mode:
+            a_opts += ["--pre-dump-mode", "%s" % self.__pre_dump_mode]
 
         nowait = False
         if self.__lazy_migrate and action == "dump":
@@ -1286,6 +1323,9 @@ class criu:
         if self.__empty_ns:
             r_opts += ['--empty-ns', 'net']
             r_opts += ['--action-script', os.getcwd() + '/empty-netns-prep.sh']
+
+        if self.__remote:
+            r_opts += ["--remote"]
 
         if self.__dedup:
             r_opts += ["--auto-dedup"]
@@ -1834,8 +1874,8 @@ class Launcher:
               'stop', 'empty_ns', 'fault', 'keep_img', 'report', 'snaps',
               'sat', 'script', 'rpc', 'lazy_pages', 'join_ns', 'dedup', 'sbs',
               'freezecg', 'user', 'dry_run', 'noauto_dedup',
-              'remote_lazy_pages', 'show_stats', 'lazy_migrate',
-              'tls', 'criu_bin', 'crit_bin')
+              'remote_lazy_pages', 'show_stats', 'lazy_migrate', 'remote',
+              'tls', 'criu_bin', 'crit_bin', 'pre_dump_mode')
         arg = repr((name, desc, flavor, {d: self.__opts[d] for d in nd}))
 
         if self.__use_log:
@@ -2018,7 +2058,7 @@ def print_sep(title, sep="=", width=80):
 
 def print_error(line):
     line = line.rstrip()
-    print(line)
+    print(line.encode('utf-8'))
     if line.endswith('>'):  # combine pie output
         return True
     return False
@@ -2028,7 +2068,7 @@ def grep_errors(fname):
     first = True
     print_next = False
     before = []
-    with open(fname) as fd:
+    with open(fname, errors='replace') as fd:
         for l in fd:
             before.append(l)
             if len(before) > 5:
@@ -2482,6 +2522,10 @@ rp.add_argument("--criu-bin",
 rp.add_argument("--crit-bin",
                 help="Path to crit binary",
                 default='../crit/crit')
+rp.add_argument("--pre-dump-mode",
+                help="Use splice or read mode of pre-dumping",
+                choices=['splice', 'read'],
+                default='splice')
 
 lp = sp.add_parser("list", help="List tests")
 lp.set_defaults(action=list_tests)

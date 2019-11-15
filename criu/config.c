@@ -276,6 +276,7 @@ void init_opts(void)
 	opts.empty_ns = 0;
 	opts.status_fd = -1;
 	opts.log_level = DEFAULT_LOGLEVEL;
+	opts.pre_dump_mode = PRE_DUMP_SPLICE;
 }
 
 bool deprecated_ok(char *what)
@@ -508,6 +509,7 @@ int parse_options(int argc, char **argv, bool *usage_error,
 		BOOL_OPT(SK_CLOSE_PARAM, &opts.tcp_close),
 		{ "verbosity",			optional_argument,	0, 'v'	},
 		{ "ps-socket",			required_argument,	0, 1091},
+		BOOL_OPT("remote", &opts.remote),
 		{ "config",			required_argument,	0, 1089},
 		{ "no-default-config",		no_argument,		0, 1090},
 		{ "tls-cacert",			required_argument,	0, 1092},
@@ -516,6 +518,8 @@ int parse_options(int argc, char **argv, bool *usage_error,
 		{ "tls-key",			required_argument,	0, 1095},
 		BOOL_OPT("tls", &opts.tls),
 		{"tls-no-cn-verify",		no_argument,		&opts.tls_no_cn_verify, true},
+		{ "cgroup-yard",		required_argument,	0, 1096 },
+		{ "pre-dump-mode",		required_argument,	0, 1097},
 		{ },
 	};
 
@@ -814,6 +818,17 @@ int parse_options(int argc, char **argv, bool *usage_error,
 		case 1095:
 			SET_CHAR_OPTS(tls_key, optarg);
 			break;
+		case 1096:
+			SET_CHAR_OPTS(cgroup_yard, optarg);
+			break;
+		case 1097:
+			if (!strcmp("read", optarg)) {
+				opts.pre_dump_mode = PRE_DUMP_READ;
+			} else if (strcmp("splice", optarg)) {
+				pr_err("Unable to parse value of --pre-dump-mode\n");
+				return 1;
+			}
+			break;
 		case 'V':
 			pr_msg("Version: %s\n", CRIU_VERSION);
 			if (strcmp(CRIU_GITID, "0"))
@@ -831,10 +846,10 @@ int parse_options(int argc, char **argv, bool *usage_error,
 
 bad_arg:
 	if (idx < 0) /* short option */
-		pr_msg("Error: invalid argument for -%c: %s\n",
+		pr_err("invalid argument for -%c: %s\n",
 				opt, optarg);
 	else /* long option */
-		pr_msg("Error: invalid argument for --%s: %s\n",
+		pr_err("invalid argument for --%s: %s\n",
 				long_opts[idx].name, optarg);
 	return 1;
 }

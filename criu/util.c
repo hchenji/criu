@@ -26,7 +26,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sched.h>
-#include <ctype.h>
 
 #include "kerndat.h"
 #include "page.h"
@@ -421,29 +420,52 @@ int copy_file(int fd_in, int fd_out, size_t bytes)
 {
 	ssize_t written = 0;
 	size_t chunk = bytes ? bytes : 4096;
+	char *buffer;
+	ssize_t ret;
+
+	buffer = xmalloc(chunk);
+	if (buffer == NULL) {
+		pr_perror("failed to allocate buffer to copy file");
+		return -1;
+	}
 
 	while (1) {
-		ssize_t ret;
+		if (opts.remote) {
+			ret = read(fd_in, buffer, chunk);
+			if (ret < 0) {
+				pr_perror("Can't read from fd_in\n");
+				ret = -1;
+				goto err;
+			}
+			if (write(fd_out, buffer, ret) != ret) {
+				pr_perror("Couldn't write all read bytes\n");
+				ret = -1;
+				goto err;
+			}
+		} else
+			ret = sendfile(fd_out, fd_in, NULL, chunk);
 
-		ret = sendfile(fd_out, fd_in, NULL, chunk);
 		if (ret < 0) {
 			pr_perror("Can't send data to ghost file");
-			return -1;
+			ret = -1;
+			goto err;
 		}
 
 		if (ret == 0) {
 			if (bytes && (written != bytes)) {
 				pr_err("Ghost file size mismatch %zu/%zu\n",
 						written, bytes);
-				return -1;
+				ret = -1;
+				goto err;
 			}
 			break;
 		}
 
 		written += ret;
 	}
-
-	return 0;
+err:
+	xfree(buffer);
+	return ret;
 }
 
 int read_fd_link(int lfd, char *buf, size_t size)
@@ -536,7 +558,7 @@ int cr_system_userns(int in, int out, int err, char *cmd,
 	sigemptyset(&blockmask);
 	sigaddset(&blockmask, SIGCHLD);
 	if (sigprocmask(SIG_BLOCK, &blockmask, &oldmask) == -1) {
-		pr_perror("Can not set mask of blocked signals");
+		pr_perror("Cannot set mask of blocked signals");
 		return -1;
 	}
 
@@ -545,6 +567,12 @@ int cr_system_userns(int in, int out, int err, char *cmd,
 		pr_perror("fork() failed");
 		goto out;
 	} else if (pid == 0) {
+		sigemptyset(&blockmask);
+		if (sigprocmask(SIG_SETMASK, &blockmask, NULL) == -1) {
+			pr_perror("Cannot clear blocked signals");
+			goto out_chld;
+		}
+
 		if (userns_pid > 0) {
 			if (switch_ns(userns_pid, &user_ns_desc, NULL))
 				goto out_chld;
@@ -978,80 +1006,7 @@ void tcp_nodelay(int sk, bool on)
 		pr_perror("Unable to restore TCP_NODELAY (%d)", val);
 }
 
-static inline void pr_xsym(unsigned char *data, size_t len, int pos)
-{
-	char sym;
-
-	if (pos < len)
-		sym = data[pos];
-	else
-		sym = ' ';
-
-	pr_msg("%c", isprint(sym) ? sym : '.');
-}
-
-static inline void pr_xdigi(unsigned char *data, size_t len, int pos)
-{
-	if (pos < len)
-		pr_msg("%02x ", data[pos]);
-	else
-		pr_msg("   ");
-}
-
-static int nice_width_for(unsigned long addr)
-{
-	int ret = 3;
-
-	while (addr) {
-		addr >>= 4;
-		ret++;
-	}
-
-	return ret;
-}
-
-void print_data(unsigned long addr, unsigned char *data, size_t size)
-{
-	int i, j, addr_len;
-	unsigned zero_line = 0;
-
-	addr_len = nice_width_for(addr + size);
-
-	for (i = 0; i < size; i += 16) {
-		if (*(u64 *)(data + i) == 0 && *(u64 *)(data + i + 8) == 0) {
-			if (zero_line == 0)
-				zero_line = 1;
-			else {
-				if (zero_line == 1) {
-					pr_msg("*\n");
-					zero_line = 2;
-				}
-
-				continue;
-			}
-		} else
-			zero_line = 0;
-
-		pr_msg("%#0*lx: ", addr_len, addr + i);
-		for (j = 0; j < 8; j++)
-			pr_xdigi(data, size, i + j);
-		pr_msg(" ");
-		for (j = 8; j < 16; j++)
-			pr_xdigi(data, size, i + j);
-
-		pr_msg(" |");
-		for (j = 0; j < 8; j++)
-			pr_xsym(data, size, i + j);
-		pr_msg(" ");
-		for (j = 8; j < 16; j++)
-			pr_xsym(data, size, i + j);
-
-		pr_msg("|\n");
-	}
-}
-
-static int get_sockaddr_in(struct sockaddr_storage *addr, char *host,
-			unsigned short port)
+static int get_sockaddr_in(struct sockaddr_storage *addr, char *host)
 {
 	memset(addr, 0, sizeof(*addr));
 
@@ -1069,26 +1024,26 @@ static int get_sockaddr_in(struct sockaddr_storage *addr, char *host,
 	}
 
 	if (addr->ss_family == AF_INET6) {
-		((struct sockaddr_in6 *)addr)->sin6_port = htons(port);
+		((struct sockaddr_in6 *)addr)->sin6_port = htons(opts.port);
 	} else if (addr->ss_family == AF_INET) {
-		((struct sockaddr_in *)addr)->sin_port = htons(port);
+		((struct sockaddr_in *)addr)->sin_port = htons(opts.port);
 	}
 
 	return 0;
 }
 
-int setup_tcp_server(char *type, char *addr, unsigned short *port)
+int setup_tcp_server(char *type)
 {
 	int sk = -1;
 	int sockopt = 1;
 	struct sockaddr_storage saddr;
 	socklen_t slen = sizeof(saddr);
 
-	if (get_sockaddr_in(&saddr, addr, (*port))) {
+	if (get_sockaddr_in(&saddr, opts.addr)) {
 		return -1;
 	}
 
-	pr_info("Starting %s server on port %u\n", type, *port);
+	pr_info("Starting %s server on port %u\n", type, opts.port);
 
 	sk = socket(saddr.ss_family, SOCK_STREAM, IPPROTO_TCP);
 
@@ -1114,19 +1069,19 @@ int setup_tcp_server(char *type, char *addr, unsigned short *port)
 	}
 
 	/* Get socket port in case of autobind */
-	if ((*port) == 0) {
+	if (opts.port == 0) {
 		if (getsockname(sk, (struct sockaddr *)&saddr, &slen)) {
 			pr_perror("Can't get %s server name", type);
 			goto out;
 		}
 
 		if (saddr.ss_family == AF_INET6) {
-			(*port) = ntohs(((struct sockaddr_in *)&saddr)->sin_port);
+			opts.port = ntohs(((struct sockaddr_in6 *)&saddr)->sin6_port);
 		} else if (saddr.ss_family == AF_INET) {
-			(*port) = ntohs(((struct sockaddr_in6 *)&saddr)->sin6_port);
+			opts.port = ntohs(((struct sockaddr_in *)&saddr)->sin_port);
 		}
 
-		pr_info("Using %u port\n", (*port));
+		pr_info("Using %u port\n", opts.port);
 	}
 
 	return sk;
@@ -1183,7 +1138,7 @@ err:
 	return -1;
 }
 
-int setup_tcp_client(char *hostname)
+int setup_tcp_client(void)
 {
 	struct sockaddr_storage saddr;
 	struct addrinfo addr_criteria, *addr_list, *p;
@@ -1198,10 +1153,10 @@ int setup_tcp_client(char *hostname)
 
 	/*
 	 * addr_list contains a list of addrinfo structures that corresponding
-	 * to the criteria specified in hostname and addr_criteria.
+	 * to the criteria specified in opts.addr and addr_criteria.
 	 */
-	if (getaddrinfo(hostname, NULL, &addr_criteria, &addr_list)) {
-		pr_perror("Failed to resolve hostname: %s", hostname);
+	if (getaddrinfo(opts.addr, NULL, &addr_criteria, &addr_list)) {
+		pr_perror("Failed to resolve hostname: %s", opts.addr);
 		goto out;
 	}
 
@@ -1222,7 +1177,7 @@ int setup_tcp_client(char *hostname)
 		inet_ntop(p->ai_family, ip, ipstr, sizeof(ipstr));
 		pr_info("Connecting to server %s:%u\n", ipstr, opts.port);
 
-		if (get_sockaddr_in(&saddr, ipstr, opts.port))
+		if (get_sockaddr_in(&saddr, ipstr))
 			goto out;
 
 		sk = socket(saddr.ss_family, SOCK_STREAM, IPPROTO_TCP);

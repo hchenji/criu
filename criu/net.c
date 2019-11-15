@@ -1919,17 +1919,45 @@ out:
 
 static int restore_ip_dump(int type, int pid, char *cmd)
 {
-	int ret = -1;
+	int ret = -1, sockfd, n, written;
+	FILE *tmp_file;
 	struct cr_img *img;
+	char buf[1024];
 
 	img = open_image(type, O_RSTR, pid);
 	if (empty_image(img)) {
 		close_image(img);
 		return 0;
 	}
+	sockfd = img_raw_fd(img);
+	tmp_file = tmpfile();
+	if (!tmp_file) {
+		pr_perror("Failed to open tmpfile");
+		return -1;
+	}
+
+	while ((n = read(sockfd, buf, 1024)) > 0) {
+		written = fwrite(buf, sizeof(char), n, tmp_file);
+		if (written < n) {
+			pr_perror("Failed to write to tmpfile "
+				  "[written: %d; total: %d]", written, n);
+			goto close;
+		}
+	}
+
+	if (fseek(tmp_file, 0, SEEK_SET)) {
+		pr_perror("Failed to set file position to beginning of tmpfile");
+		goto close;
+	}
+
 	if (img) {
-		ret = run_ip_tool(cmd, "restore", NULL, NULL, img_raw_fd(img), -1, 0);
+		ret = run_ip_tool(cmd, "restore", NULL, NULL, fileno(tmp_file), -1, 0);
 		close_image(img);
+	}
+
+close:
+	if(fclose(tmp_file)) {
+		pr_perror("Failed to close tmpfile");
 	}
 
 	return ret;
@@ -2032,6 +2060,7 @@ static inline int restore_iptables(int pid)
 		return -1;
 	if (empty_image(img)) {
 		ret = 0;
+		close_image(img);
 		goto ipt6;
 	}
 
@@ -2056,6 +2085,9 @@ out:
 int read_net_ns_img(void)
 {
 	struct ns_id *ns;
+
+	if (!(root_ns_mask & CLONE_NEWNET))
+		return 0;
 
 	for (ns = ns_ids; ns != NULL; ns = ns->next) {
 		struct cr_img *img;

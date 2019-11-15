@@ -46,6 +46,14 @@
 
 #include "setproctitle.h"
 #include "sysctl.h"
+#include "img-remote.h"
+
+void flush_early_log_to_stderr() __attribute__((destructor));
+
+void flush_early_log_to_stderr(void)
+{
+	flush_early_log_buffer(STDERR_FILENO);
+}
 
 int main(int argc, char *argv[], char *envp[])
 {
@@ -108,7 +116,7 @@ int main(int argc, char *argv[], char *envp[])
 		SET_CHAR_OPTS(work_dir, opts.imgs_dir);
 
 	if (optind >= argc) {
-		pr_msg("Error: command is required\n");
+		pr_err("command is required\n");
 		goto usage;
 	}
 
@@ -116,17 +124,17 @@ int main(int argc, char *argv[], char *envp[])
 
 	if (has_exec_cmd) {
 		if (!has_sub_command) {
-			pr_msg("Error: --exec-cmd requires a command\n");
+			pr_err("--exec-cmd requires a command\n");
 			goto usage;
 		}
 
 		if (strcmp(argv[optind], "restore")) {
-			pr_msg("Error: --exec-cmd is available for the restore command only\n");
+			pr_err("--exec-cmd is available for the restore command only\n");
 			goto usage;
 		}
 
 		if (opts.restore_detach) {
-			pr_msg("Error: --restore-detached and --exec-cmd cannot be used together\n");
+			pr_err("--restore-detached and --exec-cmd cannot be used together\n");
 			goto usage;
 		}
 
@@ -138,7 +146,7 @@ int main(int argc, char *argv[], char *envp[])
 	} else {
 		/* No subcommands except for cpuinfo and restore --exec-cmd */
 		if (strcmp(argv[optind], "cpuinfo") && has_sub_command) {
-			pr_msg("Error: excessive parameter%s for command %s\n",
+			pr_err("excessive parameter%s for command %s\n",
 				(argc - optind) > 2 ? "s" : "", argv[optind]);
 			goto usage;
 		}
@@ -229,6 +237,22 @@ int main(int argc, char *argv[], char *envp[])
 	if (!strcmp(argv[optind], "page-server"))
 		return cr_page_server(opts.daemon_mode, false, -1) != 0;
 
+	if (!strcmp(argv[optind], "image-cache")) {
+		if (!opts.port)
+			goto opt_port_missing;
+		return image_cache(opts.daemon_mode, DEFAULT_CACHE_SOCKET);
+	}
+
+	if (!strcmp(argv[optind], "image-proxy")) {
+		if (!opts.addr) {
+			pr_err("address not specified\n");
+			return 1;
+		}
+		if (!opts.port)
+			goto opt_port_missing;
+		return image_proxy(opts.daemon_mode, DEFAULT_PROXY_SOCKET);
+	}
+
 	if (!strcmp(argv[optind], "service"))
 		return cr_service(opts.daemon_mode);
 
@@ -237,7 +261,7 @@ int main(int argc, char *argv[], char *envp[])
 
 	if (!strcmp(argv[optind], "cpuinfo")) {
 		if (!argv[optind + 1]) {
-			pr_msg("Error: cpuinfo requires an action: dump or check\n");
+			pr_err("cpuinfo requires an action: dump or check\n");
 			goto usage;
 		}
 		if (!strcmp(argv[optind + 1], "dump"))
@@ -247,17 +271,17 @@ int main(int argc, char *argv[], char *envp[])
 	}
 
 	if (!strcmp(argv[optind], "exec")) {
-		pr_msg("The \"exec\" action is deprecated by the Compel library.\n");
+		pr_err("The \"exec\" action is deprecated by the Compel library.\n");
 		return -1;
 	}
 
 	if (!strcmp(argv[optind], "show")) {
-		pr_msg("The \"show\" action is deprecated by the CRIT utility.\n");
-		pr_msg("To view an image use the \"crit decode -i $name --pretty\" command.\n");
+		pr_err("The \"show\" action is deprecated by the CRIT utility.\n");
+		pr_err("To view an image use the \"crit decode -i $name --pretty\" command.\n");
 		return -1;
 	}
 
-	pr_msg("Error: unknown command: %s\n", argv[optind]);
+	pr_err("unknown command: %s\n", argv[optind]);
 usage:
 	pr_msg("\n"
 "Usage:\n"
@@ -268,6 +292,8 @@ usage:
 "  criu service [<options>]\n"
 "  criu dedup\n"
 "  criu lazy-pages -D DIR [<options>]\n"
+"  criu image-cache [<options>]\n"
+"  criu image-proxy [<options>]\n"
 "\n"
 "Commands:\n"
 "  dump           checkpoint a process/tree identified by pid\n"
@@ -279,6 +305,8 @@ usage:
 "  dedup          remove duplicates in memory dump\n"
 "  cpuinfo dump   writes cpu information into image file\n"
 "  cpuinfo check  validates cpu information read from image file\n"
+"  image-proxy    launch dump-side proxy to sent images\n"
+"  image-cache    launch restore-side cache to receive images\n"
 	);
 
 	if (usage_error) {
@@ -331,6 +359,8 @@ usage:
 "                            macvlan[IFNAME]:OUTNAME\n"
 "                            mnt[COOKIE]:ROOT\n"
 "\n"
+"  --remote              dump/restore images directly to/from remote node using\n"
+"                        image-proxy/image-cache\n"
 "* Special resources support:\n"
 "     --" SK_EST_PARAM "  checkpoint/restore established TCP connections\n"
 "     --" SK_INFLIGHT_PARAM "   skip (ignore) in-flight TCP connections\n"
@@ -367,6 +397,10 @@ usage:
 "  --cgroup-dump-controller NAME\n"
 "                        define cgroup controller to be dumped\n"
 "                        and skip anything else present in system\n"
+"  --cgroup-yard PATH\n"
+"                        instead of trying to mount cgroups in CRIU, provide\n"
+"                        a path to a directory with already created cgroup yard.\n"
+"                        Useful if you don't want to grant CAP_SYS_ADMIN to CRIU\n"
 "  --lsm-profile TYPE:NAME\n"
 "                        Specify an LSM profile to be used during restore.\n"
 "                        The type can be either 'apparmor' or 'selinux'.\n"
@@ -420,6 +454,8 @@ usage:
 "                        pages images of previous dump\n"
 "                        when used on restore, as soon as page is restored, it\n"
 "                        will be punched from the image\n"
+"  --pre-dump-mode       splice - parasite based pre-dumping (default)\n"
+"                        read   - process_vm_readv syscall based pre-dumping\n"
 "\n"
 "Page/Service server options:\n"
 "  --address ADDR        address of server or service\n"
@@ -446,7 +482,11 @@ usage:
 
 	return 0;
 
+opt_port_missing:
+	pr_err("port not specified\n");
+	return 1;
+
 opt_pid_missing:
-	pr_msg("Error: pid not specified\n");
+	pr_err("pid not specified\n");
 	return 1;
 }

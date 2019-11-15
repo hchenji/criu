@@ -80,6 +80,7 @@
 #include "fault-injection.h"
 #include "dump.h"
 #include "eventpoll.h"
+#include "img-remote.h"
 
 /*
  * Architectures can overwrite this function to restore register sets that
@@ -782,8 +783,6 @@ static int dump_task_core_all(struct parasite_ctl *ctl,
 
 	img = img_from_set(cr_imgset, CR_FD_CORE);
 	ret = pb_write_one(img, core, PB_CORE);
-	if (ret < 0)
-		goto err;
 
 err:
 	pr_info("----------------------------------------\n");
@@ -1487,6 +1486,9 @@ static int cr_pre_dump_finish(int status)
 	if (ret)
 		goto err;
 
+	he.has_pre_dump_mode = true;
+	he.pre_dump_mode = opts.pre_dump_mode;
+
 	pstree_switch_state(root_item, TASK_ALIVE);
 
 	timing_stop(TIME_FROZEN);
@@ -1512,7 +1514,15 @@ static int cr_pre_dump_finish(int status)
 			goto err;
 
 		mem_pp = dmpi(item)->mem_pp;
-		ret = page_xfer_dump_pages(&xfer, mem_pp);
+
+		if (opts.pre_dump_mode == PRE_DUMP_READ) {
+			timing_stop(TIME_MEMWRITE);
+			ret = page_xfer_predump_pages(item->pid->real,
+							&xfer, mem_pp);
+		}
+		else {
+			ret = page_xfer_dump_pages(&xfer, mem_pp);
+		}
 
 		xfer.close(&xfer);
 
@@ -1562,6 +1572,11 @@ int cr_pre_dump_tasks(pid_t pid)
 	 * We might need a lot of pipes to fetch huge number of pages to dump.
 	 */
 	rlimit_unlimit_nofile();
+
+	if (opts.remote && push_snapshot_id() < 0) {
+		pr_err("Failed to push image namespace.\n");
+		goto err;
+	}
 
 	root_item = alloc_pstree_item();
 	if (!root_item)
@@ -1739,6 +1754,11 @@ static int cr_dump_finish(int ret)
 
 	close_service_fd(CR_PROC_FD_OFF);
 
+	if (opts.remote && (finish_remote_dump() < 0)) {
+		pr_err("Finish remote dump failed.\n");
+		return post_dump_ret ? : 1;
+	}
+
 	if (ret) {
 		pr_err("Dumping FAILED.\n");
 	} else {
@@ -1766,6 +1786,11 @@ int cr_dump_tasks(pid_t pid)
 	 *  maximum.
 	 */
 	rlimit_unlimit_nofile();
+
+	if (opts.remote && push_snapshot_id() < 0) {
+		pr_err("Failed to push image namespace.\n");
+		goto err;
+	}
 
 	root_item = alloc_pstree_item();
 	if (!root_item)
@@ -1915,6 +1940,8 @@ int cr_dump_tasks(pid_t pid)
 	ret = inventory_save_uptime(&he);
 	if (ret)
 		goto err;
+
+	he.has_pre_dump_mode = false;
 
 	ret = write_img_inventory(&he);
 	if (ret)
